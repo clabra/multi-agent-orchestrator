@@ -8,6 +8,7 @@ import { URL } from 'url';
 export interface ApiAgentOptions extends AgentOptions {
     endpoint: string;
     streaming?: boolean;
+    headersCallback?: () => Record<string, string>
     inputPayloadEncoder?: (inputText: string, ...additionalParams: any) => any; 
     outputPayloadDecoder?: (response: any) => any;
 }
@@ -22,11 +23,16 @@ export class ApiAgent extends Agent {
     }
 
     async  *streamingPost(url: string, payload: any): AsyncGenerator<string, void, unknown> {
+        const defaultHeaders = {
+            'Content-Type': 'application/json',
+        };
+
+        // Merge default headers with callback headers if provided
+        const headers = this.options.headersCallback ? { ...defaultHeaders, ...this.options.headersCallback() } : defaultHeaders;
+
         const response = await fetch(url, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: headers,
           body: JSON.stringify(payload),
         });
       
