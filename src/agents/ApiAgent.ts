@@ -7,6 +7,7 @@ import { URL } from 'url';
 
 export interface ApiAgentOptions extends AgentOptions {
     endpoint: string;
+    method: string;
     streaming?: boolean;
     headersCallback?: () => Record<string, string>
     inputPayloadEncoder?: (inputText: string, ...additionalParams: any) => any; 
@@ -22,16 +23,18 @@ export class ApiAgent extends Agent {
         this.options = options;
     }
 
-    async  *streamingPost(url: string, payload: any): AsyncGenerator<string, void, unknown> {
+    private async *fetch(payload: any, streaming: boolean = false): AsyncGenerator<any, string | void, unknown> {
         const defaultHeaders = {
-            'Content-Type': 'application/json',
+          'Content-Type': 'application/json',
         };
-
+        
         // Merge default headers with callback headers if provided
-        const headers = this.options.headersCallback ? { ...defaultHeaders, ...this.options.headersCallback() } : defaultHeaders;
-
-        const response = await fetch(url, {
-          method: 'POST',
+        const headers = this.options.headersCallback 
+          ? { ...defaultHeaders, ...this.options.headersCallback() } 
+          : defaultHeaders;
+      
+        const response = await fetch(this.options.endpoint, {
+          method: this.options.method,
           headers: headers,
           body: JSON.stringify(payload),
         });
@@ -47,46 +50,34 @@ export class ApiAgent extends Agent {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
       
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              break;
+        if (streaming) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                break;
+              }
+              const chunk = decoder.decode(value, { stream: true });
+              const message = this.options.outputPayloadDecoder(chunk);
+              yield message;
             }
-            
-            const chunk = decoder.decode(value, { stream: true });
-            const message = this.options.outputPayloadDecoder(chunk);
-            yield message;
+          } finally {
+            reader.releaseLock();
           }
-        } finally {
-          reader.releaseLock();
-        }
-    }
-
-    async postRequest(url: string, payload: any): Promise<any> {
-        try {
-          const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload),
-            });
-      
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+        } else {
+          try {
+            let result = '';
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                break;
+              }
+              result += decoder.decode(value, { stream: false });
             }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-        
-            const { done, value } = await reader.read();
-            const chunk = decoder.decode(value, { stream: false });
-            return  chunk;
-        } catch (error) {
-          console.error('Error:', error);
-          throw error;
+            return result;
+          } finally {
+            reader.releaseLock();
+          }
         }
       }
 
@@ -99,13 +90,12 @@ export class ApiAgent extends Agent {
       ): Promise<ConversationMessage | AsyncIterable<any>> {
 
         if (this.options.streaming) {
-            return this.streamingPost(this.options.endpoint, this.options.inputPayloadEncoder(inputText, chatHistory));
+            return this.fetch(this.options.inputPayloadEncoder(inputText, chatHistory), true);
         } 
         else 
         {
-            const response = await this.postRequest(this.options.endpoint, this.options.inputPayloadEncoder(inputText, chatHistory));
-            const content = this.options.outputPayloadDecoder(response);
-            return Promise.resolve({ role: ParticipantRole.ASSISTANT, content: [{ text: content}] });
+            const result = await this.fetch(this.options.inputPayloadEncoder(inputText, chatHistory), false).next();
+            return Promise.resolve({ role: ParticipantRole.ASSISTANT, content: [{ text: this.options.outputPayloadDecoder(result.value)}] });
         }
       }
 }
